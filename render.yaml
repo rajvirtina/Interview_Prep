@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: interview-prep-backend
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-2.5-flash,gemini-2.0-flash-001,gemini-2.0-flash-lite
+      - key: GEMINI_TIMEOUT_MS
+        value: 45000
+      - key: CORS_ORIGIN
+        sync: false
