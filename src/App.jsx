@@ -364,6 +364,7 @@ function sanitizeInput(str, maxLen = 500) {
 }
 
 function buildQuestionsPrompt(form, resumeText) {
+  const currentYear = new Date().getFullYear();
   const rl = form.rounds.map((r) => ROUNDS.find((t) => t.id === r)?.label).join(", ");
   const hrProfile = isHrAdminProfile(form);
   const qaProfile = isQaTestingProfile(form);
@@ -408,7 +409,7 @@ CRITICAL REQUIREMENTS:
 3. For "system_design": name real systems (WhatsApp, Uber, Instagram, Zomato, etc.)
 4. For "managerial"/"hr": use real scenario language ("Your sprint is at risk 2 days before the deadline...")
 5. Reference the EXACT technologies mentioned in the JD
-6. Use source_hint like: "Glassdoor - ${form.company} SDE Interview 2024" or "Blind - ${form.company} thread"
+6. Use source_hint like: "Glassdoor - ${form.company} SDE Interview ${currentYear}" or "Blind - ${form.company} thread"
 7. Distribute questions across ALL selected rounds: ${form.rounds.join(", ")}
 8. Difficulty mix: 25% easy, 50% medium, 25% hard
 ${profileRules}
@@ -421,7 +422,7 @@ Return ONLY a raw JSON array, no markdown fences, no text before or after:
     "round": "l1",
     "difficulty": "medium",
     "type": "technical",
-    "source_hint": "Glassdoor - ${form.company} SDE1 Interview 2024",
+    "source_hint": "Glassdoor - ${form.company} SDE1 Interview ${currentYear}",
     "tags": ["hashmap", "arrays"]
   }
 ]
@@ -466,6 +467,9 @@ function buildChunkPlan(total, chunkSize = 10) {
 }
 
 function buildAnswerPrompt(q, company, role, jd = "") {
+  const safeCompany = sanitizeInput(company, 100);
+  const safeRole = sanitizeInput(role, 100);
+  const safeQuestion = sanitizeInput(q.question, 500);
   const isCoding = q.type === "coding";
   const isSD = q.type === "system_design" || q.round === "system_design";
   const isBeh =
@@ -473,7 +477,7 @@ function buildAnswerPrompt(q, company, role, jd = "") {
     q.round === "hr" ||
     q.round === "managerial";
   const qaProfile = QA_TESTING_KEYWORDS.test(`${role || ""} ${jd || ""}`);
-  const jdContext = (jd || "").trim().slice(0, 900);
+  const jdContext = sanitizeInput(jd, 2500);
   const jdBlock = jdContext
     ? `\nJOB DESCRIPTION CONTEXT:\n${jdContext}\n\nTailor your answer to the JD technologies, responsibilities, and seniority expectations.`
     : "";
@@ -482,9 +486,9 @@ function buildAnswerPrompt(q, company, role, jd = "") {
     : "";
 
   if (isCoding) {
-    return `You are a FAANG senior engineer coaching a ${role} candidate at ${company}.
+    return `You are a FAANG senior engineer coaching a ${safeRole} candidate at ${safeCompany}.
 
-QUESTION: "${q.question}"
+QUESTION: "${safeQuestion}"
 DIFFICULTY: ${q.difficulty} | TAGS: ${(q.tags || []).join(", ")}
 ${jdBlock}
 ${qaAnswerRules}
@@ -511,15 +515,15 @@ Space: O(?) - explain each factor
 List 5 important edge cases with expected outputs.
 
 **7. FOLLOW-UP QUESTIONS**
-2-3 actual follow-up questions interviewers at ${company} ask after this problem.
+2-3 actual follow-up questions interviewers at ${safeCompany} ask after this problem.
 
 Write clean, real code. Be specific and precise.`;
   }
 
   if (isSD) {
-    return `You are a Staff Engineer at ${company} answering a system design question for a ${role} candidate.
+    return `You are a Staff Engineer at ${safeCompany} answering a system design question for a ${safeRole} candidate.
 
-QUESTION: "${q.question}"
+QUESTION: "${safeQuestion}"
 ${jdBlock}
 ${qaAnswerRules}
 
@@ -544,15 +548,15 @@ Schema, SQL vs NoSQL choice with reasoning, partition key, indexing strategy.
 What breaks first at 10x load? Caching layer (what, where, eviction policy), sharding approach, CDN.
 
 **7. COMPANY-SPECIFIC INSIGHT**
-How ${company} or a comparable company has actually solved this. Reference real tech choices if known.
+How ${safeCompany} or a comparable company has actually solved this. Reference real tech choices if known.
 
 Use specific numbers. Name real technologies. Avoid vague statements like "use a database".`;
   }
 
   if (isBeh) {
-    return `You are a senior hiring manager at ${company} coaching a ${role} candidate.
+    return `You are a senior hiring manager at ${safeCompany} coaching a ${safeRole} candidate.
 
-QUESTION: "${q.question}"
+QUESTION: "${safeQuestion}"
 ROUND: ${q.round} | DIFFICULTY: ${q.difficulty}
 ${jdBlock}
 ${qaAnswerRules}
@@ -569,7 +573,7 @@ Which framework (STAR, SBI, SOAR) fits and why. Lay out the structure clearly.
 Write a complete answer as if the candidate is speaking - first person, 200-250 words. Be specific: include real numbers, real outcomes, real emotions. Not a template filler.
 
 **4. KEY PHRASES TO USE**
-6-8 specific phrases that resonate strongly at ${company} based on their known values and culture.
+6-8 specific phrases that resonate strongly at ${safeCompany} based on their known values and culture.
 
 **5. COMMON MISTAKES**
 3 specific things candidates do wrong on this question that are immediate red flags.
@@ -580,9 +584,9 @@ The exact follow-up the interviewer will ask next, and a one-paragraph answer to
 Make the model answer sound like a real human, not a textbook.`;
   }
 
-  return `You are a senior interviewer at ${company} for the ${role} role.
+  return `You are a senior interviewer at ${safeCompany} for the ${safeRole} role.
 
-QUESTION: "${q.question}"
+QUESTION: "${safeQuestion}"
 TYPE: ${q.type} | DIFFICULTY: ${q.difficulty}
 ${jdBlock}
 ${qaAnswerRules}
@@ -607,7 +611,7 @@ Specific, detailed answer (150-200 words). Real tools, real numbers, real trade-
 **6. FOLLOW-UP**
 The next question the interviewer will ask, and how to handle it.
 
-Be specific to ${company}. Reference their known tech stack or culture where relevant.`;
+Be specific to ${safeCompany}. Reference their known tech stack or culture where relevant.`;
 }
 
 /* ===============================================================
@@ -657,7 +661,7 @@ export default function App() {
   const [ansLoading, setAnsLoading] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
-  const [aiMode, setAiMode] = useState(false);
+  const [resumeWarning, setResumeWarning] = useState("");
   const fileRef = useRef();
   const backdropRef = useRef();
 
@@ -679,7 +683,7 @@ export default function App() {
       rd.readAsText(file);
     } else {
       setResumeText(`[Uploaded: ${file.name}]`);
-      setInfo("Only .txt resumes are fully supported. PDF/DOCX content will not be read for personalization.");
+      setResumeWarning("Only .txt files are read for personalisation. PDF/DOCX content is ignored.");
     }
   };
 
@@ -838,7 +842,6 @@ export default function App() {
       if (parsed && Array.isArray(parsed) && cleaned.length > 0) {
         timers.forEach(clearTimeout);
         setQuestions(cleaned);
-        setAiMode(true);
         const removed = parsed.length - cleaned.length;
         
         if (import.meta.env.DEV) {
@@ -860,7 +863,6 @@ export default function App() {
     } catch (e) {
       timers.forEach(clearTimeout);
       setQuestions([]);
-      setAiMode(false);
       setError(
         e?.message
           ? `Unable to generate questions from JD right now: ${e.message}`
@@ -886,6 +888,7 @@ export default function App() {
 
   /* -- OPEN ANSWER OVERLAY -- */
   const openAnswer = async (idx) => {
+    document.body.style.overflow = "hidden";
     setOpenIdx(idx);
     const q = filtered[idx];
     if (!q) return;
@@ -919,13 +922,19 @@ export default function App() {
     }
   };
 
-  const closeOverlay = () => setOpenIdx(null);
+  const closeOverlay = () => {
+    document.body.style.overflow = "";
+    setOpenIdx(null);
+  };
   useEffect(() => {
     const h = (e) => {
       if (e.key === "Escape") closeOverlay();
     };
     window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    return () => {
+      window.removeEventListener("keydown", h);
+      document.body.style.overflow = "";
+    };
   }, []);
 
   /* =================================================== RENDER =================================================== */
@@ -941,9 +950,7 @@ export default function App() {
           </div>
           <div className="hdr-r">
             {step === 3 && (
-              <span className={"pill " + (aiMode ? "pill-b" : "pill-g")}>
-                {aiMode ? "AI Mode" : "AI Unavailable"}
-              </span>
+              <span className="pill pill-b">AI Mode</span>
             )}
           </div>
         </header>
@@ -976,7 +983,7 @@ export default function App() {
                 <div className="ai-text">
                   <div className="ai-title">AI-Powered — No Setup Required</div>
                   <div className="ai-sub">
-                    Powered by Claude AI directly. Generates questions tailored to your exact JD,
+                    Powered by AI. Generates questions tailored to your exact JD,
                     company, and resume.
                   </div>
                 </div>
@@ -1082,7 +1089,7 @@ export default function App() {
                   <input
                     ref={fileRef}
                     type="file"
-                    accept=".pdf,.doc,.docx,.txt"
+                    accept=".txt"
                     onChange={(e) => handleFile(e.target.files[0])}
                   />
                   {resumeFile ? (
@@ -1115,11 +1122,14 @@ export default function App() {
                         Drop resume or click to upload
                       </div>
                       <div style={{ fontSize: ".64rem", color: "var(--txt3)" }}>
-                        PDF - DOC - DOCX - TXT
+                        TXT — PDF/DOCX coming soon
                       </div>
                     </>
                   )}
                 </div>
+                {resumeWarning && (
+                  <div className="errbx" style={{ marginTop: ".5rem" }}>{resumeWarning}</div>
+                )}
               </div>
 
               {error && <div className="errbx">Warning: {error}</div>}

@@ -17,6 +17,10 @@ const DEFAULT_GEMINI_MODELS = [
   "gemini-2.0-flash-lite",
 ];
 
+const SYSTEM_PROMPT = "You are a senior interview coach with 500+ interviews at top tech companies. You generate hyper-realistic interview questions and expert-level answers. Return ONLY raw JSON arrays when generating questions — no markdown, no text before or after the array.";
+
+const MAX_OUTPUT_TOKENS = 8000;
+
 function getGeminiModels() {
   const configured = [
     process.env.GEMINI_MODEL,
@@ -69,7 +73,7 @@ async function callGeminiModel({ apiKey, model, system, contents, maxTokens }) {
 
   try {
     const upstream = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: {
@@ -82,7 +86,7 @@ async function callGeminiModel({ apiKey, model, system, contents, maxTokens }) {
           contents,
           generationConfig: {
             temperature: 0.4,
-            maxOutputTokens: Number(maxTokens || 2000),
+            maxOutputTokens: Math.min(MAX_OUTPUT_TOKENS, Math.max(100, Number(maxTokens || 2000))),
           },
         }),
         signal: controller.signal,
@@ -123,8 +127,9 @@ async function callGeminiModel({ apiKey, model, system, contents, maxTokens }) {
 }
 
 function buildTokenBudgets(maxTokens) {
-  const base = Number(maxTokens || 4000);
-  return [base];
+  const base = Math.min(MAX_OUTPUT_TOKENS, Math.max(500, Number(maxTokens || 4000)));
+  if (base <= 1000) return [base];
+  return [base, Math.floor(base / 2), Math.min(1000, Math.floor(base / 4))];
 }
 
 const app = express();
@@ -134,6 +139,11 @@ const allowList = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((x) => x.trim())
   .filter(Boolean);
+
+if (allowList.length === 0 && process.env.NODE_ENV === "production") {
+  console.error("❌ CORS_ORIGIN must be set in production. Refusing to start.");
+  process.exit(1);
+}
 
 if (allowList.length === 0) {
   console.warn("⚠️  CORS_ORIGIN is not set — all origins are allowed. Do NOT use in production.");
@@ -152,24 +162,23 @@ app.use(
 
 app.use(express.json({ limit: "1mb" }));
 
-app.use("/api/messages",
-  rateLimit({ windowMs: 60_000, max: 20, message: { error: "Too many requests, please try again later." } })
-);
-
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/messages", async (req, res) => {
+app.post("/api/messages",
+  rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false,
+    message: { error: "Too many requests, please try again later." } }),
+  async (req, res) => {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return res.status(500).json({ error: "GEMINI_API_KEY missing in backend environment" });
     }
 
-    const { messages, system, maxTokens } = req.body || {};
-    if (!Array.isArray(messages) || !system) {
-      return res.status(400).json({ error: "Invalid payload: messages and system are required" });
+    const { messages, maxTokens } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "Invalid payload: messages array is required" });
     }
 
     const models = getGeminiModels();
@@ -189,7 +198,7 @@ app.post("/api/messages", async (req, res) => {
         const result = await callGeminiModel({
           apiKey,
           model,
-          system,
+          system: SYSTEM_PROMPT,
           contents,
           maxTokens: budget,
         });
@@ -226,11 +235,43 @@ app.post("/api/messages", async (req, res) => {
       });
     }
 
-    const text = data?.candidates?.[0]?.content?.parts
-      ?.map((part) => part?.text || "")
-      .join("");
+    const promptBlock = data?.promptFeedback?.blockReason;
+    if (promptBlock) {
+      return res.status(400).json({
+        error: `Request blocked by Gemini content policy: ${promptBlock}. Try rephrasing the job description.`,
+        code: "prompt_blocked",
+      });
+    }
+
+    const candidate = data?.candidates?.[0];
+    const finishReason = candidate?.finishReason;
+
+    if (finishReason === "SAFETY") {
+      return res.status(400).json({
+        error: "Gemini blocked this response for safety reasons. Try a different company name or job description.",
+        code: "safety_block",
+      });
+    }
+
+    if (finishReason === "MAX_TOKENS") {
+      return res.status(400).json({
+        error: "Response was cut short — too many questions requested at once. Try reducing the question count to 20 or fewer.",
+        code: "max_tokens",
+      });
+    }
+
+    if (finishReason === "RECITATION") {
+      return res.status(502).json({
+        error: "Gemini flagged the response as too similar to existing content. Try again or adjust the job description.",
+        code: "recitation",
+      });
+    }
+
+    const text = candidate?.content?.parts?.map((part) => part?.text || "").join("");
     if (!text) {
-      return res.status(502).json({ error: "No text content returned from AI" });
+      return res.status(502).json({
+        error: `No content returned from AI (finish reason: ${finishReason || "unknown"})`,
+      });
     }
 
     if (isDev) {
@@ -239,7 +280,7 @@ app.post("/api/messages", async (req, res) => {
         text_length: text.length,
         preview: textPreview,
         candidate_count: data?.candidates?.length || 0,
-        stop_reason: data?.candidates?.[0]?.finishReason || "unknown",
+        stop_reason: finishReason || "unknown",
         model_used: successMeta?.model || "unknown",
         token_budget_used: successMeta?.budget || Number(maxTokens || 0),
       });
@@ -251,6 +292,18 @@ app.post("/api/messages", async (req, res) => {
   }
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Backend running on http://localhost:${port}`);
+});
+
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received — shutting down gracefully");
+  server.close(() => {
+    console.log("All connections closed");
+    process.exit(0);
+  });
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 10_000);
 });

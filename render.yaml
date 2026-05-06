@@ -10,6 +10,8 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      - key: NODE_ENV
+        value: production
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
@@ -19,4 +21,4 @@ services:
       - key: GEMINI_TIMEOUT_MS
         value: 45000
       - key: CORS_ORIGIN
-        sync: false
+        value: "REPLACE_WITH_YOUR_HOSTINGER_URL"
