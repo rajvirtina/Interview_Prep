@@ -152,7 +152,12 @@ function extractQuestionArrayFromPayload(payload) {
 
   const preferredKeys = ["questions", "items", "data", "result", "output"];
   for (const key of preferredKeys) {
-    if (Array.isArray(payload[key])) return payload[key];
+    const val = payload[key];
+    if (!Array.isArray(val) || val.length === 0) continue;
+    const first = val[0];
+    if (typeof first === "string") return val.map((q, i) => ({ id: i + 1, question: q }));
+    if (first && typeof first === "object") return val;
+    // numeric/other arrays — skip, don't return
   }
 
   for (const value of Object.values(payload)) {
