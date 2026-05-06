@@ -1,6 +1,14 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import rateLimit from "express-rate-limit";
+
+const isDev = process.env.NODE_ENV !== "production";
+
+if (!process.env.GEMINI_API_KEY) {
+  console.error("❌ GEMINI_API_KEY is not set. Copy backend/.env.example to backend/.env and fill in your key.");
+  process.exit(1);
+}
 
 const DEFAULT_GEMINI_MODELS = [
   "gemini-2.0-flash",
@@ -61,7 +69,7 @@ async function callGeminiModel({ apiKey, model, system, contents, maxTokens }) {
 
   try {
     const upstream = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: {
@@ -127,6 +135,10 @@ const allowList = (process.env.CORS_ORIGIN || "")
   .map((x) => x.trim())
   .filter(Boolean);
 
+if (allowList.length === 0) {
+  console.warn("⚠️  CORS_ORIGIN is not set — all origins are allowed. Do NOT use in production.");
+}
+
 app.use(
   cors({
     origin(origin, callback) {
@@ -139,6 +151,10 @@ app.use(
 );
 
 app.use(express.json({ limit: "1mb" }));
+
+app.use("/api/messages",
+  rateLimit({ windowMs: 60_000, max: 20, message: { error: "Too many requests, please try again later." } })
+);
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
@@ -217,16 +233,17 @@ app.post("/api/messages", async (req, res) => {
       return res.status(502).json({ error: "No text content returned from AI" });
     }
 
-    // DEBUG: Log response info
-    const textPreview = text.length > 500 ? text.substring(0, 500) + "..." : text;
-    console.log("[DEBUG] Gemini response preview:", {
-      text_length: text.length,
-      preview: textPreview,
-      candidate_count: data?.candidates?.length || 0,
-      stop_reason: data?.candidates?.[0]?.finishReason || "unknown",
-      model_used: successMeta?.model || "unknown",
-      token_budget_used: successMeta?.budget || Number(maxTokens || 0),
-    });
+    if (isDev) {
+      const textPreview = text.length > 500 ? text.substring(0, 500) + "..." : text;
+      console.log("[DEBUG] Gemini response preview:", {
+        text_length: text.length,
+        preview: textPreview,
+        candidate_count: data?.candidates?.length || 0,
+        stop_reason: data?.candidates?.[0]?.finishReason || "unknown",
+        model_used: successMeta?.model || "unknown",
+        token_budget_used: successMeta?.budget || Number(maxTokens || 0),
+      });
+    }
 
     return res.json({ text });
   } catch (err) {
